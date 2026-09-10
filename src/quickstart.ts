@@ -6,6 +6,7 @@ import { runDailyReport, runCriticalCheck } from './runner';
 import { cpuCheck, memoryCheck, diskCheck } from './checks';
 import { teamsChannel, slackChannel, discordChannel, powerAutomateChannel } from './channels';
 import { anthropicAnalysisProvider } from './analysis';
+import { msUntilNextLocalTime } from './schedule-time';
 import type { HealthCheck, MonitorConfig } from './types';
 import type { NotificationChannel } from './channels/types';
 
@@ -28,6 +29,9 @@ export interface QuickStartOptions {
   aiApiKey?: string;
   aiModel?: string;
 
+  /** IANA timezone (e.g. "Asia/Dubai", "America/New_York") — controls both
+   *  when the daily report fires (see dailyReportHour/Minute) and how times
+   *  are displayed inside outgoing messages. Defaults to "UTC". */
   timezone?: string;
   /** Defaults to true — set false to dry-run without sending anything. */
   isProduction?: boolean;
@@ -41,6 +45,10 @@ export interface QuickStartOptions {
   criticalIntervalMinutes?: number;
   /** Set false to skip the once-a-day summary report. Default true. */
   dailyReport?: boolean;
+  /** Local hour (0-23, in `timezone`) to send the daily report. Default 9. */
+  dailyReportHour?: number;
+  /** Local minute (0-59, in `timezone`). Default 0. */
+  dailyReportMinute?: number;
 }
 
 export interface HealthMonitorHandle {
@@ -108,22 +116,34 @@ export function startHealthMonitor(opts: QuickStartOptions): HealthMonitorHandle
   const criticalMs = (opts.criticalIntervalMinutes ?? 15) * 60 * 1000;
   const criticalTimer = setInterval(runCritical, criticalMs);
 
-  let dailyTimer: ReturnType<typeof setInterval> | undefined;
+  let dailyTimer: ReturnType<typeof setTimeout> | undefined;
+  let stopped = false;
   if (opts.dailyReport !== false) {
-    const dailyMs = 24 * 60 * 60 * 1000;
-    dailyTimer = setInterval(() => {
-      runDailyReport(registry, config, history).catch(error =>
-        console.error('❌ health-monitor daily report failed:', error)
-      );
-    }, dailyMs);
+    const hour = opts.dailyReportHour ?? 9;
+    const minute = opts.dailyReportMinute ?? 0;
+
+    // setTimeout to the next local hour:minute, then re-arm for the
+    // following day after each run — rather than a flat 24h setInterval
+    // from whenever the process happened to boot.
+    const scheduleNextDailyRun = () => {
+      if (stopped) return;
+      const delayMs = msUntilNextLocalTime(config.timezone, hour, minute);
+      dailyTimer = setTimeout(() => {
+        runDailyReport(registry, config, history)
+          .catch(error => console.error('❌ health-monitor daily report failed:', error))
+          .finally(scheduleNextDailyRun);
+      }, delayMs);
+    };
+    scheduleNextDailyRun();
   }
 
   return {
     registry,
     config,
     stop() {
+      stopped = true;
       clearInterval(criticalTimer);
-      if (dailyTimer) clearInterval(dailyTimer);
+      if (dailyTimer) clearTimeout(dailyTimer);
     },
   };
 }

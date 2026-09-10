@@ -2,6 +2,7 @@ import type { CheckResult, MonitorConfig, OverallStatus } from './types';
 import type { AlertPayload, Action, Fact, NotificationChannel } from './channels/types';
 import type { AnalysisResult } from './analysis';
 import { teamsChannel, powerAutomateChannel } from './channels';
+import { formatInTimezone } from './schedule-time';
 
 export type { AlertPayload };
 
@@ -82,8 +83,10 @@ export function buildDailyReport(
   analysis?: AnalysisResult
 ): AlertPayload {
   const overall = computeOverallStatus(results);
+  const now = new Date();
   const facts: Fact[] = [
     { title: 'Overall Status', value: `${statusEmoji(overall)} ${overall.toUpperCase()}` },
+    { title: `Time (${config.timezone})`, value: formatInTimezone(now, config.timezone) },
     ...results.map(r => ({
       title: r.name,
       value: `${checkEmoji(r.status)} ${r.message}${r.details ? ` | ${r.details}` : ''}`,
@@ -100,7 +103,7 @@ export function buildDailyReport(
   return {
     service: config.serviceName,
     reportType: 'daily',
-    timestamp: new Date().toISOString(),
+    timestamp: now.toISOString(),
     overallStatus: overall,
     statusColor: statusColor(overall),
     title: `📊 ${config.serviceName} — Daily Health Report`,
@@ -126,15 +129,19 @@ export function buildIncidentReport(
   const overall = computeOverallStatus(activeResults);
   const criticalCount = activeResults.filter(r => r.status === 'critical').length;
   const warningCount = activeResults.filter(r => r.status === 'warning').length;
+  const now = new Date();
 
-  const facts: Fact[] = activeResults.map(r => {
-    const streak = escalation.get(r.name) ?? 0;
-    const streakLabel = streak > 1 ? ` (${streak}x in a row)` : '';
-    return {
-      title: r.name,
-      value: `${checkEmoji(r.status)} ${r.message}${streakLabel}${r.details ? ` | ${r.details}` : ''}`,
-    };
-  });
+  const facts: Fact[] = [
+    { title: `Time (${config.timezone})`, value: formatInTimezone(now, config.timezone) },
+    ...activeResults.map(r => {
+      const streak = escalation.get(r.name) ?? 0;
+      const streakLabel = streak > 1 ? ` (${streak}x in a row)` : '';
+      return {
+        title: r.name,
+        value: `${checkEmoji(r.status)} ${r.message}${streakLabel}${r.details ? ` | ${r.details}` : ''}`,
+      };
+    }),
+  ];
 
   const summary =
     [
@@ -147,7 +154,7 @@ export function buildIncidentReport(
   return {
     service: config.serviceName,
     reportType: criticalCount > 0 ? 'critical' : 'warning',
-    timestamp: new Date().toISOString(),
+    timestamp: now.toISOString(),
     overallStatus: overall,
     statusColor: statusColor(overall),
     title: `${criticalCount > 0 ? '🚨 CRITICAL ALERT' : '⚠️ WARNING'} — ${config.serviceName}`,
