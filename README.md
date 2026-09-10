@@ -139,10 +139,56 @@ E.g. with [cron-job.org](https://cron-job.org):
 ## Option 2: Use as a library inside another project
 
 ```bash
-npm install /path/to/health-monitor-service
-# or, once pushed to a git repo:
-npm install git+https://github.com/you/health-monitor-service.git
+npm install @monitor/health-service
 ```
+
+### The fastest path: `startHealthMonitor()`
+
+For a normal long-running Node process (Express/Fastify/Next.js server,
+worker, bot — anything that stays up), this is the entire integration:
+
+```ts
+import { startHealthMonitor } from '@monitor/health-service';
+
+startHealthMonitor({
+  serviceName: 'My App',
+  teamsWebhookUrl: process.env.TEAMS_WEBHOOK_URL,
+  slackWebhookUrl: process.env.SLACK_WEBHOOK_URL,
+  aiApiKey: process.env.ANTHROPIC_API_KEY, // optional
+});
+```
+
+That's it — no registry to build, no cron endpoint, no scheduler to wire up.
+It registers the built-in cpu/memory/disk checks, runs an alert pass every
+15 minutes and a daily summary once a day on internal timers for as long as
+your process is running, and sends to whichever webhook URLs you filled in.
+Add your own checks (a DB ping, a queue) via the `checks` option:
+
+```ts
+startHealthMonitor({
+  serviceName: 'My App',
+  slackWebhookUrl: process.env.SLACK_WEBHOOK_URL,
+  checks: {
+    database: async () => {
+      const start = Date.now();
+      await db.ping();
+      return { name: 'Database', status: 'ok', message: `${Date.now() - start}ms` };
+    },
+  },
+});
+```
+
+`startHealthMonitor` returns a handle — call `.stop()` on it during graceful
+shutdown to clear its timers. Full options: `dashboardUrl`, `discordWebhookUrl`,
+`powerAutomateWebhookUrl`, `aiModel`, `timezone`, `isProduction` (defaults to
+`true`), `includeDefaultChecks` (set `false` to skip cpu/memory/disk),
+`criticalIntervalMinutes` (default 15), `dailyReport` (default `true`).
+
+If instead you're on serverless (no long-lived process to hold a
+`setInterval`), use the lower-level building blocks below and trigger them
+from your platform's own cron/scheduled-function feature.
+
+### The building-block path (serverless, or more control)
 
 ```ts
 import {
@@ -155,7 +201,7 @@ import {
   cpuCheck,
   memoryCheck,
   type MonitorConfig,
-} from 'health-monitor-service';
+} from '@monitor/health-service';
 
 const config: MonitorConfig = {
   serviceName: 'My App',
@@ -243,7 +289,7 @@ Any destination that isn't built in — Zoom, PagerDuty, a custom webhook,
 email — is just this interface:
 
 ```ts
-import type { NotificationChannel, AlertPayload } from 'health-monitor-service';
+import type { NotificationChannel, AlertPayload } from '@monitor/health-service';
 
 function myChannel(webhookUrl: string): NotificationChannel {
   return {
@@ -278,7 +324,7 @@ Or wire up any provider yourself (OpenAI, Gemini, a local model, a fine-
 tuned prompt) — it's one function:
 
 ```ts
-import type { AnalysisProvider } from 'health-monitor-service';
+import type { AnalysisProvider } from '@monitor/health-service';
 
 const analysis: AnalysisProvider = {
   async analyze(results, { serviceName }) {
@@ -304,7 +350,7 @@ Notes:
 ## Writing your own check
 
 ```ts
-import type { HealthCheck } from 'health-monitor-service';
+import type { HealthCheck } from '@monitor/health-service';
 
 function redisCheck(client: RedisClient): HealthCheck {
   return async () => {

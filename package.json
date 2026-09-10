@@ -1,11 +1,16 @@
 {
-  "name": "health-monitor-service",
+  "name": "@monitor/health-service",
   "version": "1.0.0",
-  "description": "Pluggable health-check + Teams alerting microservice, extracted from Octopulse's monitoring system.",
+  "description": "One-call health-check + alerting for Node apps: register checks, fill in a Teams/Slack/Discord webhook (and optionally an AI key), done.",
+  "keywords": ["health-check", "monitoring", "alerting", "teams", "slack", "discord", "cron"],
   "license": "MIT",
   "type": "commonjs",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "files": ["dist", "README.md"],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "dev": "tsx watch examples/basic-server.ts",
     "build": "tsc",

@@ -19,7 +19,7 @@ import {
   memoryCheck,
   type MonitorConfig,
   type HealthCheck,
-} from 'health-monitor-service';
+} from '@monitor/health-service';
 
 // Build config from the HOST APP's own env handling — don't assume this
 // package's .env conventions match the app you're embedding it in.

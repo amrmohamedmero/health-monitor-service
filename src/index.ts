@@ -10,3 +10,4 @@ export { cpuCheck, memoryCheck, diskCheck, httpPingCheck } from './checks';
 export { createServer } from './server';
 export * from './channels';
 export * from './analysis';
+export { startHealthMonitor, type QuickStartOptions, type HealthMonitorHandle } from './quickstart';
