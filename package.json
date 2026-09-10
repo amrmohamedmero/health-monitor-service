@@ -1,0 +1,27 @@
+{
+  "name": "health-monitor-service",
+  "version": "1.0.0",
+  "description": "Pluggable health-check + Teams alerting microservice, extracted from Octopulse's monitoring system.",
+  "license": "MIT",
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "dev": "tsx watch examples/basic-server.ts",
+    "build": "tsc",
+    "start": "node dist/examples/basic-server.js",
+    "typecheck": "tsc --noEmit",
+    "report:once": "tsx examples/basic-server.ts --report",
+    "check:once": "tsx examples/basic-server.ts --check"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0",
+    "@types/node": "^20.14.0",
+    "dotenv": "^16.4.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
