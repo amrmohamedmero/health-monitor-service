@@ -1,115 +1,50 @@
 import type { CheckResult, MonitorConfig, OverallStatus } from './types';
+import type { AlertPayload, Action, Fact, NotificationChannel } from './channels/types';
+import type { AnalysisResult } from './analysis';
+import { teamsChannel, powerAutomateChannel } from './channels';
+
+export type { AlertPayload };
 
 // ============================================
-// Teams / Power Automate payload types
-// ============================================
-
-interface Fact {
-  title: string;
-  value: string;
-}
-
-interface Action {
-  type: 'Action.OpenUrl';
-  title: string;
-  url: string;
-}
-
-interface AdaptiveCard {
-  type: 'AdaptiveCard';
-  version: '1.5';
-  msteams?: { width?: 'Full' };
-  body: unknown[];
-}
-
-interface PowerAutomatePayload {
-  service: string;
-  reportType: 'daily' | 'critical' | 'warning';
-  timestamp: string;
-  overallStatus: OverallStatus;
-  statusColor: 'green' | 'orange' | 'red';
-  title: string;
-  summary: string;
-  facts: Fact[];
-  actions: Action[];
-}
-
-export interface Alert {
-  title: string;
-  message: string;
-  checkName: string;
-  details?: string;
-}
-
-// ============================================
-// Send
+// Send — fans out to every configured channel
 // ============================================
 
 /**
- * Send to whichever endpoint is configured. Power Automate wins if both
- * are set (matches the original Octopulse behavior).
+ * Sends to every channel in config.channels. If that's unset, falls back to
+ * config.teamsWebhookUrl / config.powerAutomateWebhookUrl for backward
+ * compatibility (both, if both are set — unlike the old single-URL
+ * behavior). Returns true if at least one channel accepted the message.
  */
-export async function sendNotification(
-  payload: PowerAutomatePayload,
-  config: MonitorConfig
-): Promise<boolean> {
-  if (config.powerAutomateWebhookUrl) {
-    return sendToPowerAutomate(payload, config.powerAutomateWebhookUrl);
+export async function sendNotification(payload: AlertPayload, config: MonitorConfig): Promise<boolean> {
+  const channels = resolveChannels(config);
+  if (channels.length === 0) {
+    console.error(
+      '❌ No notification channel configured (set config.channels, or teamsWebhookUrl/powerAutomateWebhookUrl)'
+    );
+    return false;
   }
-  if (config.teamsWebhookUrl) {
-    return sendToTeams(buildAdaptiveCard(payload), config.teamsWebhookUrl);
-  }
-  console.error(
-    '❌ No notification endpoint configured (teamsWebhookUrl or powerAutomateWebhookUrl)'
+
+  const outcomes = await Promise.all(
+    channels.map(async channel => {
+      try {
+        return await channel.send(payload);
+      } catch (error) {
+        console.error(`❌ Channel "${channel.name}" threw:`, error);
+        return false;
+      }
+    })
   );
-  return false;
+
+  return outcomes.some(Boolean);
 }
 
-async function sendToTeams(
-  card: AdaptiveCard,
-  webhookUrl: string
-): Promise<boolean> {
-  try {
-    const response = await fetch(webhookUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        type: 'message',
-        attachments: [
-          { contentType: 'application/vnd.microsoft.card.adaptive', content: card },
-        ],
-      }),
-    });
-    if (!response.ok) {
-      console.error(`❌ Teams webhook failed: ${response.status} ${response.statusText}`);
-      return false;
-    }
-    return true;
-  } catch (error) {
-    console.error('❌ Error sending Teams message:', error);
-    return false;
-  }
-}
+function resolveChannels(config: MonitorConfig): NotificationChannel[] {
+  if (config.channels?.length) return config.channels;
 
-async function sendToPowerAutomate(
-  payload: PowerAutomatePayload,
-  url: string
-): Promise<boolean> {
-  try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if (!response.ok) {
-      console.error(`❌ Power Automate failed: ${response.status} ${response.statusText}`);
-      return false;
-    }
-    return true;
-  } catch (error) {
-    console.error('❌ Error sending to Power Automate:', error);
-    return false;
-  }
+  const fallback: NotificationChannel[] = [];
+  if (config.powerAutomateWebhookUrl) fallback.push(powerAutomateChannel(config.powerAutomateWebhookUrl));
+  if (config.teamsWebhookUrl) fallback.push(teamsChannel(config.teamsWebhookUrl));
+  return fallback;
 }
 
 // ============================================
@@ -140,10 +75,12 @@ function dashboardActions(config: MonitorConfig): Action[] {
     : [];
 }
 
+/** Once-a-day summary covering every registered check. */
 export function buildDailyReport(
   results: CheckResult[],
-  config: MonitorConfig
-): PowerAutomatePayload {
+  config: MonitorConfig,
+  analysis?: AnalysisResult
+): AlertPayload {
   const overall = computeOverallStatus(results);
   const facts: Fact[] = [
     { title: 'Overall Status', value: `${statusEmoji(overall)} ${overall.toUpperCase()}` },
@@ -170,60 +107,53 @@ export function buildDailyReport(
     summary,
     facts,
     actions: dashboardActions(config),
+    analysis,
   };
 }
 
-export function buildAlertReport(
-  alert: Alert,
-  severity: 'critical' | 'warning',
-  config: MonitorConfig
-): PowerAutomatePayload {
-  const isCritical = severity === 'critical';
+/**
+ * A single message covering every non-ok check from one run — replaces the
+ * old "one message per check" behavior so 3 simultaneous failures produce
+ * one incident, not 3 separate pings. `escalation` maps check name -> how
+ * many consecutive runs it's been non-ok, used to label repeat offenders.
+ */
+export function buildIncidentReport(
+  activeResults: CheckResult[],
+  escalation: Map<string, number>,
+  config: MonitorConfig,
+  analysis?: AnalysisResult
+): AlertPayload {
+  const overall = computeOverallStatus(activeResults);
+  const criticalCount = activeResults.filter(r => r.status === 'critical').length;
+  const warningCount = activeResults.filter(r => r.status === 'warning').length;
+
+  const facts: Fact[] = activeResults.map(r => {
+    const streak = escalation.get(r.name) ?? 0;
+    const streakLabel = streak > 1 ? ` (${streak}x in a row)` : '';
+    return {
+      title: r.name,
+      value: `${checkEmoji(r.status)} ${r.message}${streakLabel}${r.details ? ` | ${r.details}` : ''}`,
+    };
+  });
+
+  const summary =
+    [
+      criticalCount ? `🔴 ${criticalCount} critical` : '',
+      warningCount ? `🟠 ${warningCount} warning` : '',
+    ]
+      .filter(Boolean)
+      .join(', ') || 'One or more checks degraded';
+
   return {
     service: config.serviceName,
-    reportType: severity,
+    reportType: criticalCount > 0 ? 'critical' : 'warning',
     timestamp: new Date().toISOString(),
-    overallStatus: isCritical ? 'unhealthy' : 'degraded',
-    statusColor: isCritical ? 'red' : 'orange',
-    title: `${isCritical ? '🚨 CRITICAL ALERT' : '⚠️ WARNING'} — ${config.serviceName}`,
-    summary: alert.message,
-    facts: [
-      { title: 'Alert', value: alert.title },
-      { title: 'Check', value: alert.checkName },
-      { title: 'Severity', value: isCritical ? '🔴 Critical' : '🟡 Warning' },
-      {
-        title: `Time (${config.timezone})`,
-        value: new Date().toLocaleString('en-US', { timeZone: config.timezone }),
-      },
-      ...(alert.details ? [{ title: 'Details', value: alert.details }] : []),
-    ],
+    overallStatus: overall,
+    statusColor: statusColor(overall),
+    title: `${criticalCount > 0 ? '🚨 CRITICAL ALERT' : '⚠️ WARNING'} — ${config.serviceName}`,
+    summary,
+    facts,
     actions: dashboardActions(config),
-  };
-}
-
-function buildAdaptiveCard(payload: PowerAutomatePayload): AdaptiveCard {
-  return {
-    type: 'AdaptiveCard',
-    version: '1.5',
-    msteams: { width: 'Full' },
-    body: [
-      {
-        type: 'TextBlock',
-        text: payload.title,
-        weight: 'Bolder',
-        size: 'Large',
-        color:
-          payload.statusColor === 'green'
-            ? 'Good'
-            : payload.statusColor === 'orange'
-              ? 'Warning'
-              : 'Attention',
-      },
-      { type: 'TextBlock', text: payload.summary, wrap: true, size: 'Medium' },
-      { type: 'FactSet', facts: payload.facts },
-      ...(payload.actions.length
-        ? [{ type: 'ActionSet', actions: payload.actions }]
-        : []),
-    ],
+    analysis,
   };
 }

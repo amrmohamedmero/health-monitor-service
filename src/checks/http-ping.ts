@@ -27,6 +27,7 @@ export function httpPingCheck(
           name,
           status: 'critical' as const,
           message: `HTTP ${response.status}`,
+          value: latencyMs,
           latencyMs,
         };
       }
@@ -35,6 +36,7 @@ export function httpPingCheck(
         name,
         status: latencyMs > warnMs ? ('warning' as const) : ('ok' as const),
         message: `${latencyMs}ms`,
+        value: latencyMs,
         latencyMs,
       };
     } catch (error) {

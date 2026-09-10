@@ -12,6 +12,9 @@ import {
   runDailyReport,
   runCriticalCheck,
   AlertCooldown,
+  teamsChannel,
+  slackChannel,
+  anthropicAnalysisProvider,
   cpuCheck,
   memoryCheck,
   type MonitorConfig,
@@ -23,8 +26,16 @@ import {
 const config: MonitorConfig = {
   serviceName: 'Octopulse',
   dashboardUrl: 'https://app.octopulse.co/admin/monitoring',
-  teamsWebhookUrl: process.env.TEAMS_WEBHOOK_URL,
-  powerAutomateWebhookUrl: process.env.POWER_AUTOMATE_WEBHOOK_URL,
+  // Fan out to every destination you configure — not limited to one.
+  channels: [
+    ...(process.env.TEAMS_WEBHOOK_URL ? [teamsChannel(process.env.TEAMS_WEBHOOK_URL)] : []),
+    ...(process.env.SLACK_WEBHOOK_URL ? [slackChannel(process.env.SLACK_WEBHOOK_URL)] : []),
+  ],
+  // Optional: attach a short AI root-cause note to alerts. Omit
+  // ANTHROPIC_API_KEY to leave this off entirely.
+  analysis: process.env.ANTHROPIC_API_KEY
+    ? anthropicAnalysisProvider({ apiKey: process.env.ANTHROPIC_API_KEY })
+    : undefined,
   cronSecret: process.env.CRON_SECRET,
   timezone: 'Asia/Dubai',
   isProduction:

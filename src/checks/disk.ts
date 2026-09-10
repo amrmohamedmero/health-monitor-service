@@ -6,10 +6,27 @@ const execFileAsync = promisify(execFile);
 
 /**
  * Uses `df` to check disk usage at `path` (POSIX only — Linux/macOS
- * containers). warning at > 80%, critical at > 90%.
+ * containers). warning at > warnPercent (default 80), critical at >
+ * criticalPercent (default 90). Returns a `warning` (not a crash) on
+ * Windows, since `df` doesn't exist there.
  */
-export function diskCheck(path = '/'): HealthCheck {
+export function diskCheck(
+  path = '/',
+  opts: { warnPercent?: number; criticalPercent?: number } = {}
+): HealthCheck {
+  const warnPercent = opts.warnPercent ?? 80;
+  const criticalPercent = opts.criticalPercent ?? 90;
+
   return async () => {
+    if (process.platform === 'win32') {
+      return {
+        name: 'Disk Usage',
+        status: 'warning' as const,
+        message: 'Unsupported on Windows (this check shells out to POSIX `df`)',
+        details: `Path: ${path}`,
+      };
+    }
+
     try {
       const { stdout } = await execFileAsync('df', ['-Pk', path]);
       const lines = stdout.trim().split('\n');
@@ -18,10 +35,11 @@ export function diskCheck(path = '/'): HealthCheck {
       const usedKB = parseInt(parts[2], 10);
       const percent = Math.round((usedKB / totalKB) * 100);
 
-      const status = percent > 90 ? 'critical' : percent > 80 ? 'warning' : 'ok';
+      const status = percent > criticalPercent ? 'critical' : percent > warnPercent ? 'warning' : 'ok';
       return {
         name: 'Disk Usage',
         status,
+        value: percent,
         message: `${percent}% (${(usedKB / 1024 / 1024).toFixed(1)}/${(totalKB / 1024 / 1024).toFixed(1)} GB)`,
         details: `Path: ${path}`,
       };
