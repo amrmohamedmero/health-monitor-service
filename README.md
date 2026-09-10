@@ -180,13 +180,112 @@ startHealthMonitor({
 
 `startHealthMonitor` returns a handle — call `.stop()` on it during graceful
 shutdown to clear its timers. Full options: `dashboardUrl`, `discordWebhookUrl`,
-`powerAutomateWebhookUrl`, `aiModel`, `timezone`, `isProduction` (defaults to
-`true`), `includeDefaultChecks` (set `false` to skip cpu/memory/disk),
+`powerAutomateWebhookUrl`, `aiModel`, `isProduction` (defaults to `true`),
+`includeDefaultChecks` (set `false` to skip cpu/memory/disk),
 `criticalIntervalMinutes` (default 15), `dailyReport` (default `true`).
 
-If instead you're on serverless (no long-lived process to hold a
-`setInterval`), use the lower-level building blocks below and trigger them
-from your platform's own cron/scheduled-function feature.
+**Running the daily report at a specific time, in a specific location:**
+set `timezone` (any IANA name — `"Asia/Dubai"`, `"America/New_York"`,
+`"Europe/London"`) plus `dailyReportHour`/`dailyReportMinute` (default
+`9`/`0`). The report fires at that local wall-clock time every day,
+recomputed daily so DST shifts self-correct — not "24h after the process
+happened to boot":
+
+```ts
+startHealthMonitor({
+  serviceName: 'My App',
+  slackWebhookUrl: process.env.SLACK_WEBHOOK_URL,
+  timezone: 'Asia/Dubai',
+  dailyReportHour: 9,      // 9:00 AM Dubai time
+  dailyReportMinute: 0,
+});
+```
+
+Every outgoing message also carries a `Time (<timezone>)` fact so whoever
+reads the alert knows when it fired in that location, regardless of what
+timezone the server itself runs in.
+
+---
+
+## Choosing how checks get triggered
+
+There are two fundamentally different ways to get this package to actually
+run its checks on a schedule — pick based on what kind of process you're
+running:
+
+| | In-process (`startHealthMonitor`) | External cron (HTTP endpoints) |
+|---|---|---|
+| **Use when** | Your app is a long-running process (a server, worker, bot) that's always up | Your app is serverless/ephemeral (Vercel/Lambda functions, a container that scales to zero), or you want scheduling decoupled from the app's uptime |
+| **Setup** | One function call, see above | Deploy `createServer()` standalone, then point an external scheduler at its `/health-report` and `/critical-check` routes |
+| **"Certain time, certain location"** | `timezone` + `dailyReportHour`/`dailyReportMinute` options | The scheduler's own timezone/schedule setting (e.g. cron-job.org's per-job timezone dropdown) |
+| **Downside** | If your app process itself goes down, the monitor goes down with it — nothing is watching from outside | One more moving part (the external scheduler) to configure and trust |
+
+If you picked **external cron**, here's the full walkthrough for
+cron-job.org (the flow is nearly identical for Railway Cron / GitHub
+Actions / any other scheduler — just the field names differ).
+
+### Full cron-job.org guide
+
+**What you need before you start:**
+1. This service deployed somewhere with a public URL (Railway, Fly.io,
+   Render, a VPS — anywhere that keeps the process running and reachable
+   over HTTPS).
+2. A `CRON_SECRET` value — generate one yourself: `openssl rand -hex 32`.
+   Set it as an env var on your **deployment** (not on cron-job.org — it's
+   your app's password, cron-job.org just needs to send it back).
+3. Your notification webhook URL(s) (`TEAMS_WEBHOOK_URL` /
+   `SLACK_WEBHOOK_URL` / `DISCORD_WEBHOOK_URL`) also set as env vars on the
+   deployment — cron-job.org never needs to know about these, it only talks
+   to your service's HTTP endpoints.
+
+**Step 1 — Create a free account** at [cron-job.org](https://cron-job.org)
+(email + password, or Google sign-in).
+
+**Step 2 — Create the critical-check job** (Dashboard → **Create cronjob**):
+
+| Field | What to put |
+|---|---|
+| **Title** | Anything, e.g. `MyApp - critical check` |
+| **Address (URL)** | `https://your-service.example.com/critical-check` |
+| **Request method** (under "Advanced") | `GET` |
+| **Save responses** | On — lets you see `{success, alertsSent, checks}` in the execution log while you're testing |
+| **Notification settings** tab | Enable "Notify on failure" (email you if cron-job.org itself gets a non-2xx or times out — this is your dead-man's-switch on the *scheduler*, separate from this package's own) |
+| **Schedule tab → Execution schedule** | Choose **"Every X minutes"** → `15` (or `30`) |
+| **Schedule tab → Time zone** | **This is the "certain location" setting** — pick the timezone that matters for your schedule (usually only relevant if you later switch to specific times rather than "every N minutes", which doesn't care about timezone) |
+| **Advanced → Request timeout** | 30 seconds is plenty |
+| **Advanced → Custom headers** | Add one: `Authorization` = `Bearer <your CRON_SECRET>` |
+
+Save it.
+
+**Step 3 — Create the daily-report job** the same way, but:
+- **Address**: `https://your-service.example.com/health-report`
+- **Schedule tab**: switch to **"Custom"** instead of "Every X minutes" —
+  this is where the time zone field actually matters. Set:
+  - **Hours**: the specific hour you want (e.g. `9`)
+  - **Minutes**: `0`
+  - **Days/Months/Weekdays**: leave as "every"
+  - **Time zone**: pick the location this "9am" should mean (e.g.
+    `Asia/Dubai`) — cron-job.org fires based on this, converting to UTC
+    internally.
+- Same `Authorization: Bearer <CRON_SECRET>` header as before.
+
+**Step 4 — Test immediately.** Open each job and click **"Run now"** (don't
+wait for the schedule). Check the execution history:
+- `200` with `{"success":true,...}` — working.
+- `401` — the header value doesn't match `CRON_SECRET` on your deployment
+  (check for a stray space, or that you set the env var on the actual
+  running deployment, not just locally).
+- Timeout / connection error — the URL isn't reachable publicly, or the
+  deployment isn't running.
+
+**Optional — snoozing from cron-job.org too:** you can create a one-off
+manually-triggered job (or just use "Run now" whenever needed) for
+`POST /snooze` with a JSON body — under **Advanced → Request body**, set:
+```json
+{"check": "Database", "minutes": 30}
+```
+and content type `application/json`, same auth header. Useful right before
+a planned deploy/restart.
 
 ### The building-block path (serverless, or more control)
 
